@@ -96,6 +96,12 @@ Update `docs/DECISION_LOG.md`, `docs/DEFECT_LEDGER.md` and `docs/PHASE_STATUS.md
 Tell him, in a few lines, what to open on his phone, what to look at, and what is
 new. Then stop.
 
+**Every phase handoff must include a clickable live app link**, currently
+`https://bill6006.github.io/life-command/preview/`, alongside the phone checks.
+Carry this requirement into every next dispatch. At a document-only checkpoint,
+include the current app link and say that the app has not changed. This
+requirement does not count as the owner's Green or advance the phase.
+
 - **"Green — next phase"** → write this file as the dispatch for **phase 3 (see
   yourself)** from `PLAN.md`, `Phase: 3` on its own line near the top, completion
   marker last, and **start phase 3 in this same conversation** if context allows.
