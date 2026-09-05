@@ -1,12 +1,25 @@
-# Next dispatch — phase 2: new moves
+# Next dispatch — phase 2: catalogue review, then new moves
 
-**Phase:** 2 — **New moves: the catalogue wired in, "why this", "I'm testing this", "did you do it?"**
+Phase: 2
 
-**Next actor:** Claude Builder
-**Model:** Claude Opus 5
-**Reasoning / Effort:** Max
-**Conversation:** NEW
+**New moves: the catalogue wired in, "why this", "I'm testing this", "did you do it?"**
+
+**Next actor:** Owner — catalogue Green or Yellow; then Codex builder and orchestrator
+**Conversation:** Continue here while context allows
 **Control:** the owner says **Green** or **Yellow**. Nothing else.
+**Main repository:** `D:\Code\AI Coding Agents\Codex\life-command`
+**Working branch:** `phase-2-new-moves`
+
+**Checkpoint, 2026-09-05: step 0 documented; YELLOW — awaiting the owner.**
+`docs/MOVE_CATALOGUE.md` now proposes K1–K4 (presence), L1–L3 (faith), and
+M1–M2 (finishing), with retrieved sources, evidence limits, and the extended
+coherence review. E7 was removed under the owner's settled decision. Counts:
+26 accepted base entries + nine proposed additions = 35. No app code changed.
+
+**A Green at this checkpoint releases the phase 2 build below. It does not
+accept phase 2 or dispatch phase 3.** A Yellow revises the catalogue in place.
+Only after the phase 2 build, its gates, deployment proof, and a separate
+owner Green does the phase 3 closeout instruction apply.
 
 ---
 
@@ -19,7 +32,7 @@ file. Everything else under `docs/` is history and is not planned from.
 
 **Nothing of this phase has been built.**
 
-## Step 0 — extend the catalogue, document only, then wait for Green
+## Step 0 — documented, waiting for Green
 
 Before any code: add three families to `docs/MOVE_CATALOGUE.md`, with the same
 fields and citation rule as the first 26 and the same coherence pass —
@@ -78,7 +91,7 @@ what Preview serves.
 Update `docs/DECISION_LOG.md`, `docs/DEFECT_LEDGER.md` and `docs/PHASE_STATUS.md`
 (the phase is **YELLOW — awaiting the owner** until he says Green).
 
-## Then stop and hand it to the owner
+## After the completed build, stop and hand it to the owner
 
 Tell him, in a few lines, what to open on his phone, what to look at, and what is
 new. Then stop.
@@ -97,8 +110,8 @@ new. Then stop.
 ```text
 Start the Life Command build. You are the builder and the orchestrator.
 
-Repository:
-D:\Code\AI Coding Agents\Claude Code\life-command
+Main repository:
+D:\Code\AI Coding Agents\Codex\life-command
 
 Read PLAN.md at the repository root, then docs/NEXT_PROMPT.md, and execute the
 phase it dispatches exactly as written. Those two files are the whole plan.
@@ -117,5 +130,3 @@ When a phase is finished, make the LAST meaningful line of docs/NEXT_PROMPT.md
 exactly:
 <!-- LCO_COMPLETE -->
 ```
-
-<!-- LCO_COMPLETE -->
