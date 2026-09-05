@@ -8,10 +8,10 @@ actually change your readings, and forecasts where the week is heading.
 [`docs/NEXT_PROMPT.md`](docs/NEXT_PROMPT.md). The owner controls the build with
 two words: **Green** and **Yellow**.
 
-| | |
-| ------------- | ----------------------------------------------------- |
-| Preview       | https://bill6006.github.io/life-command/preview/       |
-| Production    | https://bill6006.github.io/life-command/               |
+|            |                                                  |
+| ---------- | ------------------------------------------------ |
+| Preview    | https://bill6006.github.io/life-command/preview/ |
+| Production | https://bill6006.github.io/life-command/         |
 
 ```bash
 npm ci

@@ -67,7 +67,7 @@ says so.
 
 | #   | You get                                                                                                | Needs first       |
 | --- | ------------------------------------------------------------------------------------------------------ | ----------------- |
-| 0   | **A new home.** This repository, at its own address. **Done.**                                          | —                 |
+| 0   | **A new home.** This repository, at its own address. **Done.**                                         | —                 |
 | 1   | **The move catalogue** — a document you read. **Done: 26 moves, your decisions recorded.**             | —                 |
 | 2   | **New moves in the app**, from the catalogue. "Why this." "I'm testing this." One-tap "did you do it?" | 0, 1              |
 | 3   | **See yourself.** Today's trace, the week, a heatmap, who you are becoming, as dated counts.           | 0                 |
