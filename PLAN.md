@@ -399,11 +399,13 @@ what to open on your phone and what to look at. It keeps the decision log and wr
 `docs/NEXT_PROMPT.md` for its own successor conversation, because context runs
 out and the next conversation has to pick up exactly where this one stopped.
 
-**Every phase handoff includes a clickable live app link.** The current Preview
-address is `https://bill6006.github.io/life-command/preview/`. Give the owner
-the verified live URL alongside what is new and what to check on his phone;
-carry this requirement into every next dispatch. At a document-only checkpoint,
-also include the current app link and state that the app has not changed.
+**After deploying a phase's changes, provide a clickable live link to that
+deployed work.** Verify that the URL serves the phase's tested checkpoint,
+then say what is new and what to check on the phone. The Preview target is
+`https://bill6006.github.io/life-command/preview/`. Do not present an existing
+build as the handoff for new work. At a document-only checkpoint, link to the
+document for review; provide the app link after the new work is deployed and
+verified. Carry this requirement into every next dispatch.
 
 **Small phases.** If the list for a phase grows while building, the builder stops
 and says so rather than absorbing it.

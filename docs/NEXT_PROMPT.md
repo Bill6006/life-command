@@ -96,11 +96,14 @@ Update `docs/DECISION_LOG.md`, `docs/DEFECT_LEDGER.md` and `docs/PHASE_STATUS.md
 Tell him, in a few lines, what to open on his phone, what to look at, and what is
 new. Then stop.
 
-**Every phase handoff must include a clickable live app link**, currently
-`https://bill6006.github.io/life-command/preview/`, alongside the phone checks.
-Carry this requirement into every next dispatch. At a document-only checkpoint,
-include the current app link and say that the app has not changed. This
-requirement does not count as the owner's Green or advance the phase.
+**After deploying the phase's changes, include a clickable live link to that
+deployed work**, verified to serve the phase's tested checkpoint, alongside
+what is new and the phone checks. The Preview target is
+`https://bill6006.github.io/life-command/preview/`. At a document-only checkpoint,
+link to the document for review; provide the app link after the new work is
+deployed and verified. Do not present an existing build as the handoff for new
+work. Carry this requirement into every next dispatch. This correction does
+not count as the owner's Green or advance the phase.
 
 - **"Green — next phase"** → write this file as the dispatch for **phase 3 (see
   yourself)** from `PLAN.md`, `Phase: 3` on its own line near the top, completion
