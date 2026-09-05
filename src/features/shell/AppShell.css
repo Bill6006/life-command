@@ -1,0 +1,306 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* ---- Header ---------------------------------------------------------------
+ * The build identity on the left, and the one entry to everything that is not
+ * a primary destination on the right (plan section 5). Low profile: a phone
+ * screen is mostly for the decision, not for chrome.
+ */
+/*
+ * The whole header group sticks as one; its members do not stick apart.
+ *
+ * And it is **opaque** (QA-07-010). Sticking as a group fixed the members
+ * overlapping each other; it did nothing about what is behind them. The
+ * stale-build notice is a translucent orange wash — `rgba(255, 125, 77, 0.2)`
+ * over `0.11`, no blur — which looks like a tint at the top of the page,
+ * where the only thing behind it is the page background, and becomes a
+ * window once the group starts sticking. Scrolled content was drawn straight
+ * through the words "A newer build is deployed": "What has been observed to
+ * follow what" on Data, "6.75 hours" on Timeline.
+ *
+ * That notice is the one piece of copy in the app whose whole job is to stop
+ * the owner mistaking old code for the deployed product, so a version of it
+ * he cannot read is worse than not showing it.
+ *
+ * Fixed here rather than on the notice, because the defect is not the
+ * notice's colour — it is that a sticky layer composites over whatever
+ * scrolls beneath it. One opaque backing under the group answers it for
+ * every member at once, including the next one somebody adds. The members
+ * keep their own tints, which now read against this instead of against the
+ * page, so nothing changes at the top of a document and everything changes
+ * halfway down one.
+ */
+.shell__top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--ground);
+}
+
+.topbar {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(var(--safe-top) + var(--space-2)) var(--space-4) var(--space-2);
+  /*
+   * A tint over the group's opaque backing, not a pane of glass over the
+   * page. The `backdrop-filter: blur(12px)` that used to sit here was doing
+   * the same job the group background now does, and doing it only for this
+   * one member — the notices below it had no blur at all, which is how the
+   * build notice ended up transparent to scrolled text (QA-07-010).
+   */
+  background: rgba(20, 23, 31, 0.86);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.topbar__wordmark {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.topbar__more {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  /*
+   * Section 37 — a real touch target, not a 16px glyph in a corner.
+   *
+   * It was 2.25rem, which is 36px, under a comment saying it was a real touch
+   * target — DEF-0093. The overflow control is on every screen, so it was the
+   * most-reachable undersized target in the app, and it was undersized because
+   * a number was written here instead of the one the rest of the app uses.
+   */
+  min-height: var(--touch-target);
+  padding: 0 var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-pill);
+  transition:
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.topbar__more:hover {
+  color: var(--text-secondary);
+}
+
+.topbar__more[aria-current='page'] {
+  color: var(--accent);
+  border-color: var(--accent-edge);
+  background: var(--accent-dim);
+}
+
+.topbar__more .nav__icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.preview-strip__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.1875rem var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-edge);
+  border-radius: var(--radius-pill);
+}
+
+.preview-strip__dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.preview-strip__sha {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+}
+
+/* ---- Stale build notice ---------------------------------------------------
+ * Plan section 33: the owner should never have to wonder whether the phone is
+ * showing stale code.
+ */
+.build-notice {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: linear-gradient(180deg, rgba(255, 125, 77, 0.2), rgba(255, 125, 77, 0.11));
+  border-bottom: 1px solid var(--accent-edge);
+  animation: notice-in var(--dur-slow) var(--ease-out);
+}
+
+.build-notice__text {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.build-notice__button {
+  flex-shrink: 0;
+  padding: 0.4375rem var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-on);
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.build-notice__button:active {
+  transform: scale(0.96);
+}
+
+/*
+ * Deliberately not the build notice's colour.
+ *
+ * A newer build being available is news; looking at somebody else's evening
+ * while believing it is yours is a different kind of thing, and the two should
+ * not read as the same interruption.
+ */
+.lab-notice {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  animation: notice-in var(--dur-slow) var(--ease-out);
+}
+
+.lab-notice__text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.lab-notice__button {
+  flex-shrink: 0;
+  padding: 0.4375rem var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.lab-notice__button:active {
+  transform: scale(0.96);
+}
+
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Content -------------------------------------------------------------- */
+.shell__content {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+  /* The fixed nav must never cover content or controls (plan section 37). */
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + var(--space-8));
+}
+
+/* ---- Bottom navigation ----------------------------------------------------- */
+.nav {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) calc(var(--safe-bottom) + var(--space-2));
+  background: rgba(21, 25, 33, 0.93);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--line-soft);
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.34);
+}
+
+.nav__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2) var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  border-radius: var(--radius-md);
+  transition:
+    color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.nav__item:hover {
+  color: var(--text-secondary);
+}
+
+.nav__item[aria-current='page'] {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.nav__icon {
+  display: block;
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.nav__label {
+  line-height: 1;
+}
+
+/* A screen that is still arriving, or did not arrive at all.
+ * Never a bare spinner — section 36 wants an error to be visible. */
+.lazy-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-6) 0;
+}
+
+.lazy-screen button {
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-5);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+}

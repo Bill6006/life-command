@@ -1,0 +1,215 @@
+/* Now (canonical plan sections 6 and 24).
+ *
+ * The decision gets the light; everything else on the screen gets out of its
+ * way. The premise sits above the move in quiet type, so the owner reads where
+ * they are before what to do — and the answer buttons are the only other thing
+ * with any weight, because tapping one is the only thing this screen asks of
+ * them.
+ */
+
+.now-premise {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+
+.now-travelled {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+}
+
+.now-linkish {
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* The lifecycle row.
+ *
+ * Directly under the decision and above everything else, because it is the one
+ * thing on this screen the owner came to do. Two weights: acting on the move,
+ * and the several ways of not acting on it — which sit together so neither is
+ * an easy accident under a thumb.
+ */
+.now-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: calc(var(--space-3) * -1);
+}
+
+.now-act {
+  /* Section 37 — a target a thumb can hit without aiming. */
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  transition:
+    transform var(--dur-fast) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.now-act--go {
+  color: var(--text-primary);
+  background: var(--accent-dim);
+  border-color: var(--accent-edge);
+}
+
+.now-act:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-edge);
+}
+
+.now-act:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.now-act:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.now-rests {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+
+.now-question {
+  font-size: var(--text-lg);
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+
+.now-options {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.now-option {
+  /* Section 37 — a target a thumb can hit without aiming. */
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  cursor: pointer;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  transition:
+    transform var(--dur-fast) var(--ease),
+    border-color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.now-option:hover:not(:disabled) {
+  border-color: var(--accent-edge);
+  background: var(--accent-dim);
+}
+
+.now-option:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.now-option:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-option,
+  .now-act {
+    transition: none;
+  }
+
+  .now-option:active:not(:disabled),
+  .now-act:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/*
+ * The evidence entry point (canonical plan section 51).
+ *
+ * A link at the end of the screen, below everything Now already showed, and
+ * nothing above it moved to make room. Section 51 asks for "a compact secondary
+ * entry point" precisely so that the analytics do not arrive on the surface
+ * whose job is one move — so this is the smallest thing on the screen when it
+ * is closed, and the page simply grows downward when it is not.
+ */
+.now-evidence {
+  display: flex;
+  flex-direction: column;
+}
+
+/* "Stop suggesting that" — AUD-0050.
+ *
+ * A link in register and a target in size. It writes the most permanent thing
+ * the owner can say, so it does not sit next to the refusal buttons — and it
+ * still has to be reachable by a thumb rather than by a cursor, which is what
+ * the 44px the Android gate checks for is about (section 37). The padding is
+ * what makes an underlined phrase clear that, without turning it into a fifth
+ * button competing with the row above.
+ */
+.now-stop {
+  margin-top: calc(var(--space-2) * -1);
+  text-align: right;
+}
+
+.now-stop button {
+  display: inline-flex;
+  align-items: center;
+  /*
+   * The token, not 44px — QA-82-004.
+   *
+   * This said `44px` while every sibling said `2.75rem`, which is the same
+   * number written so that a sweep for one of them misses the other. Both were
+   * exactly the size the Android gate measures against.
+   */
+  min-height: var(--touch-target);
+  padding: 0 var(--space-2);
+}
+
+/*
+ * The one question after "Can't right now" — F07, D-164.
+ *
+ * Set apart from the lifecycle row rather than inside it, because it is not a
+ * sixth thing to do about the move: the inability is already recorded, and this
+ * is optional. It carries "Just leave it" in the same row as the causes so the
+ * way out is never smaller than the way in.
+ */
+.now-blocker {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Something left half-finished today — F10. */
+.now-resume__sentence {
+  margin: 0 0 var(--space-1);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+}

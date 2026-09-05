@@ -1,0 +1,2072 @@
+import { readFileSync } from 'node:fs'
+import { coreDomains } from '../../src/domain/domains'
+import { composeExport } from '../../src/features/export/compose'
+import type { ExportSectionId } from '../../src/features/export/sections'
+import { assembleTimeline } from '../../src/features/timeline/timelineEntries'
+import { decide } from '../../src/intelligence/engine'
+import { insightsFor } from '../../src/intelligence/insights'
+import { assembleSituation } from '../../src/intelligence/situation'
+import { snapshotFromWire } from '../../src/memory/snapshot'
+import { buildView } from '../../src/memory/view'
+import { scenarioById } from '../../src/synthetic/scenarios'
+import { join } from 'node:path'
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Frame,
+  type Locator,
+  type Page,
+} from '@playwright/test'
+import {
+  adaptationClaims,
+  adaptationClaimsOnAnyScreen,
+  containsApprovedBlockerCopy,
+  isApprovedBlockerCopy,
+  isApprovedWhenBlocked,
+  readingUnits,
+  type ReadingUnit,
+  withoutApprovedNonPromises,
+} from '../../scripts/adaptation-claims.mjs'
+
+/**
+ * Routing Phase 84, in a real browser — "what the owner is trying to become".
+ *
+ * D-161 is the reason this file is not the synthetic suite one layer thinner.
+ * Every gate in this campaign has been green against fixtures authored by the
+ * process that wrote the code, and an independent reader with a browser then
+ * found forty-four things none of them had. So the assertions here are the
+ * owner's: **open the near-empty history, read the screen, press the thing.**
+ *
+ * The store is `The first evening` throughout — one record, a single guide
+ * answer — because a capability is accepted when an ordinary owner can reach it
+ * from a near-empty store and not when a prepared fixture demonstrates it.
+ */
+
+const APP = '/life-command/preview/'
+
+async function loadInQa(page: Page, title: string) {
+  await page.goto(`${APP}#/qa`)
+  await expect(page.getByRole('heading', { level: 1, name: 'QA' })).toBeVisible()
+  await page.getByRole('button', { name: new RegExp(title) }).click()
+  await expect(page.locator('.qa-scenario--active')).toContainText(title)
+}
+
+async function go(page: Page, name: 'Now' | 'Life' | 'Timeline' | 'Insights') {
+  await page.locator('.nav').getByRole('button', { name }).click()
+  await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
+}
+
+/**
+ * Every sentence a panel puts on screen — QA-84-012.
+ *
+ * The D-187 cases read a **child** locator: the question's inner block, and the
+ * standing blocker's own row. Everything around them — the panel title, the
+ * paragraph above the rows, the accessible name on the withdrawal control — was
+ * outside the assertion, and QA showed that a promise written into any of it
+ * would render on a green gate. So this reads the panel, leaf element by leaf
+ * element, plus the accessibility tree with it.
+ */
+async function everySentenceIn(panel: Locator): Promise<readonly string[]> {
+  return (await panel.evaluate(readingUnits)).map((unit) => unit.text)
+}
+
+async function openCareer(page: Page) {
+  await page.goto(`${APP}#/life/career`)
+  await expect(page.getByRole('heading', { level: 1, name: 'Career & Learning' })).toBeVisible()
+}
+
+/**
+ * Answer the guide until there is something to press.
+ *
+ * The near-empty store opens with a question rather than a move, which is the
+ * app working correctly: it has one record and asks before it suggests. So this
+ * is the ordinary opening of an evening rather than test scaffolding — two taps,
+ * exactly as `tests/synthetic/ordinary-use-journey.test.ts` walks it.
+ */
+async function untilThereIsAMove(page: Page) {
+  for (let taps = 0; taps < 3; taps += 1) {
+    if (await page.getByTestId('now-actions').isVisible()) return
+    const question = page.getByTestId('now-question')
+    if (!(await question.isVisible())) break
+    await page.locator('.now-option').first().click()
+    await expect(question)
+      .not.toBeVisible({ timeout: 5000 })
+      .catch(() => undefined)
+  }
+  await expect(page.getByTestId('now-actions')).toBeVisible()
+}
+
+/**
+ * Answer the guide until there is a move, choosing named answers where the
+ * question is one this file cares about.
+ *
+ * `untilThereIsAMove` presses whatever comes first, which for energy is
+ * *"Running on empty"* — a recovery evening. Several cases below need an
+ * ordinary one, so they say which answers they mean.
+ */
+async function answerGuideWith(page: Page, wanted: readonly string[]) {
+  /*
+   * Answer whatever the guide is asking, preferring a named option, until
+   * there is something to press.
+   *
+   * Written to survive the screen re-rendering underneath it, which it does
+   * constantly and correctly: every control on Now carries `disabled={busy}`
+   * while an append is in flight, travelling the clock rebuilds the whole
+   * decision, and an answer can remove the question that was on screen when it
+   * was read. So each pass re-reads what is there, waits for the state a click
+   * needs, and treats a lost element as a reason to look again rather than as
+   * a failure — the alternative is a test that reports the app broken because
+   * it re-rendered.
+   */
+  for (let taps = 0; taps < 6; taps += 1) {
+    if ((await page.getByTestId('now-actions').count()) > 0) return
+    const options = page.locator('.now-option')
+    if ((await options.count()) === 0) return
+
+    /*
+     * A plain loop, because `Array.find` with an async predicate does not do
+     * what it reads like: every promise is truthy, so it returns the first
+     * candidate whether or not the option is on screen. It passed by retrying,
+     * which is the worst way for a test helper to be right.
+     */
+    let target = options.first()
+    for (const label of wanted) {
+      const option = page.locator('.now-option', { hasText: label }).first()
+      if ((await option.count()) > 0) {
+        target = option
+        break
+      }
+    }
+    try {
+      await target.click({ timeout: 5_000 })
+    } catch {
+      // Gone or still busy. The next pass reads the screen as it now is.
+    }
+  }
+}
+
+/** Move the laboratory clock forward, the way the QA screen does. */
+async function travel(page: Page, unit: '+1 day' | '+1 week', times: number) {
+  await page.goto(`${APP}#/qa`)
+  for (let step = 0; step < times; step += 1) {
+    await page.locator('.qa-travel').getByRole('button', { name: unit }).click()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Item 1 — saying what he is aiming at, and the app changing its mind
+// ---------------------------------------------------------------------------
+
+test.describe('a destination can be named, from a near-empty store', () => {
+  test('says what the area is for, and reads it back', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+
+    // Before: the page says plainly that nothing tells it what this is for.
+    await expect(page.getByTestId('destination-empty')).toBeVisible()
+
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Working as a cloud engineer')
+    await page.getByTestId('destination-milestone-input').fill('Get through the networking basics')
+    await page.getByTestId('destination-save').click()
+
+    await expect(page.getByTestId('destination-aim')).toContainText('Working as a cloud engineer')
+    await expect(page.getByTestId('destination-next')).toContainText(
+      'Get through the networking basics',
+    )
+  })
+
+  test('says what it does not know rather than filling it in', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Working as a cloud engineer')
+    await page.getByTestId('destination-save').click()
+
+    // G-009's rule applied to an aspiration: an unstated baseline reads as
+    // unstated, never as a zero and never as a default.
+    await expect(page.getByTestId('destination-baseline')).toContainText('not said')
+    await expect(page.getByTestId('destination-missing')).toBeVisible()
+  })
+
+  test('shows no percentage, bar or figure about him — D-162', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Working as a cloud engineer')
+    await page.getByTestId('destination-milestone-input').fill('Get through the networking basics')
+    await page.getByTestId('destination-save').click()
+
+    const screen = await page.locator('.screen').innerText()
+    expect(screen).not.toMatch(/\d+\s*%/)
+    expect(screen.toLowerCase()).not.toContain('readiness')
+    expect(screen.toLowerCase()).not.toContain('life score')
+    // And no progress element anywhere, which is the shape a figure arrives in.
+    await expect(page.locator('progress, meter, [role="progressbar"]')).toHaveCount(0)
+  })
+
+  test('changes what Now suggests', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+
+    // Two answers get a move on screen. Whatever it is, it is not about a
+    // topic, because there is no topic in the store.
+    await untilThereIsAMove(page)
+    const before = await page.locator('.primary-surface__headline').innerText()
+    expect(before).not.toContain('networking')
+
+    await openCareer(page)
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Working as a cloud engineer')
+    await page.getByTestId('destination-milestone-input').fill('Get through the networking basics')
+    await page.getByTestId('destination-save').click()
+
+    await go(page, 'Now')
+    /*
+     * The study move is now in the running, which it could not be before: the
+     * generator needs a learning topic and nothing an owner could tap made one.
+     *
+     * "In the running" rather than "on the card": which of them wins is the
+     * arbiter's, and asserting a winner here would be this test quietly holding
+     * the ranking rather than the capability.
+     */
+    await expect(page.locator('.screen')).toContainText('networking basics')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 3 — introducing a thing the app can refer to
+// ---------------------------------------------------------------------------
+
+test.describe('the owner can introduce something', () => {
+  test('offers the six kinds, and says what it understood before it acts', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+
+    for (const kind of ['goal', 'routine', 'person', 'place', 'skill', 'obligation']) {
+      await expect(page.getByTestId(`authoring-kind-${kind}`)).toBeVisible()
+    }
+
+    await page.getByTestId('authoring-kind-place').click()
+    await page.getByTestId('authoring-name').fill('The library')
+
+    // The confirmation, and the half that earns it: what it will not assume.
+    await expect(page.getByTestId('authoring-proposal')).toContainText('The library')
+    await expect(page.getByTestId('authoring-unknowns')).toBeVisible()
+
+    await page.getByTestId('authoring-save').click()
+    await expect(page.getByTestId('authoring-kinds')).toBeVisible()
+  })
+
+  test('refuses a draft it cannot build, and says why', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+
+    await page.getByTestId('authoring-kind-obligation').click()
+    await page.getByTestId('authoring-name').fill('Working hours')
+    await page.getByTestId('authoring-from').fill('17:00')
+    await page.getByTestId('authoring-to').fill('09:00')
+
+    /*
+     * Two problems at once — the times are back to front and no day is named —
+     * and both are said. Asserting on the block rather than on one row is the
+     * point: a form that reported only the first thing wrong would send him
+     * round twice.
+     */
+    const proposal = page.getByTestId('authoring-proposal')
+    await expect(proposal).toContainText('end after it starts')
+    await expect(page.getByTestId('authoring-save')).toBeDisabled()
+  })
+
+  test('every input on the new controls has a name a browser can compute', async ({ page }) => {
+    /*
+     * D-176, asked of the running app rather than of the source — which is what
+     * `element.labels` actually is, and the half a static scan cannot see.
+     */
+    await loadInQa(page, 'The first evening')
+    await openCareer(page)
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('authoring-kind-goal').click()
+
+    const unnamed = await page.evaluate(() => {
+      const out: string[] = []
+      for (const control of document.querySelectorAll('input, textarea, select')) {
+        const element = control as HTMLInputElement
+        const named =
+          element.labels?.length ||
+          element.getAttribute('aria-label') ||
+          element.getAttribute('aria-labelledby')
+        if (!named) out.push(element.outerHTML.slice(0, 90))
+      }
+      return out
+    })
+    expect(unnamed).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 2 — a session, a course and a milestone read as three things
+// ---------------------------------------------------------------------------
+
+test.describe('what has actually happened', () => {
+  test('counts sessions and says what that is not evidence of', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Start it' }).click()
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Done' }).first().click()
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    await expect(page.getByTestId('progress-completion')).toBeVisible()
+    await expect(page.getByTestId('progress-completion')).toContainText('1 session')
+    await expect(page.getByTestId('progress-completion')).toContainText('not what it came to')
+  })
+
+  test('does not turn sessions into a milestone', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Start it' }).click()
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Done' }).first().click()
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    await expect(page.getByTestId('progress-milestone')).toHaveCount(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 5 — "Can't right now", and the way back
+// ---------------------------------------------------------------------------
+
+test.describe('an interruption is not a refusal', () => {
+  test('asks once what was in the way, and offers a way out of the question', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    const silent = page.getByTestId('blocker-silent')
+    // One or the other, never neither: the decision always says something.
+    await expect(asked.or(silent)).toBeVisible()
+
+    if (await asked.isVisible()) {
+      await expect(page.getByTestId('blocker-leave')).toBeVisible()
+      await page.getByTestId('blocker-leave').click()
+      await expect(asked).toHaveCount(0)
+    }
+  })
+
+  test('offers the move back, with what was in the way on it', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Start it' }).click()
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    await expect(page.getByTestId('resume-sentence')).toBeVisible()
+    await expect(page.getByTestId('resume-state')).toContainText('did not fit')
+    await expect(page.getByTestId('resume-start')).toBeEnabled()
+  })
+
+  test('has a button for the evening that ran out', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    const actions = page.getByTestId('now-actions')
+    await actions.getByRole('button', { name: 'Start it' }).click()
+    await expect(actions.getByRole('button', { name: 'Only part of it' })).toBeEnabled()
+    await actions.getByRole('button', { name: 'Only part of it' }).click()
+    await expect(page.locator('.rows')).toContainText('Part done')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 6 — a correction says what it will do, and the private permission
+// ---------------------------------------------------------------------------
+
+test.describe('correcting what the app recorded', () => {
+  test('states the consequence before it acts', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Start it' }).click()
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Done' }).first().click()
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    await page.getByTestId('correction-open-button').first().click()
+
+    await expect(page.getByTestId('correction-consequence')).toBeVisible()
+    await expect(page.getByTestId('correction-preserved')).toContainText('history')
+
+    // And the other gesture states a different consequence.
+    const first = await page.getByTestId('correction-consequence').innerText()
+    await page.getByTestId('correction-gesture-timing').click()
+    await expect(page.getByTestId('correction-consequence')).not.toHaveText(first)
+  })
+
+  test('withdraws an entry and leaves it in the record', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await untilThereIsAMove(page)
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Start it' }).click()
+    await page.getByTestId('now-actions').getByRole('button', { name: 'Done' }).first().click()
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    const events = page.getByTestId('correctable-event')
+    /*
+     * Wait for the list to settle before reading it.
+     *
+     * One start and one completion, and the page renders them as the store
+     * publishes: reading "the first row" mid-settle picks whichever arrived
+     * first, and the assertion afterwards then compares a row against text that
+     * was never in it. The count is the settled state, so waiting on it is
+     * waiting on the right thing.
+     */
+    await expect(events).toHaveCount(2)
+    /*
+     * By what it says rather than by how many there are.
+     *
+     * A count is the wrong assertion here twice over: the page renders two
+     * entries for one evening — the start and the completion — and a count read
+     * before the list has settled is a count of a different screen. What the
+     * owner is doing is withdrawing **that entry**, so that is what is checked.
+     */
+    const withdrawing = (await events.first().innerText()).split(String.fromCharCode(10))[0] ?? ''
+    expect(withdrawing.length).toBeGreaterThan(0)
+
+    await page.getByTestId('correction-open-button').first().click()
+    await page.getByTestId('correction-apply').click()
+
+    /*
+     * Gone from the whole list, not merely off the top of it. A check on the
+     * first row alone passes whenever the withdrawn entry moves down one.
+     */
+    await expect(events).toHaveCount(1)
+    await expect(events.first()).not.toContainText(withdrawing)
+  })
+})
+
+test.describe('the private permission', () => {
+  test('is on the private page, off, and says what it does', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await page.goto(`${APP}#/life/private`)
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+
+    await expect(page.getByTestId('permission')).toBeVisible()
+    await expect(page.getByTestId('permission-state')).toContainText('does not influence')
+    await expect(page.getByTestId('permission-toggle')).toContainText('Allow it')
+  })
+
+  test('can be turned on and off again', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await page.goto(`${APP}#/life/private`)
+
+    await page.getByTestId('permission-toggle').click()
+    await expect(page.getByTestId('permission-state')).toContainText('may influence')
+
+    await page.getByTestId('permission-toggle').click()
+    await expect(page.getByTestId('permission-state')).toContainText('does not influence')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Item 4 — the second agenda, on Life and never on Now
+// ---------------------------------------------------------------------------
+
+test.describe('the second information agenda', () => {
+  test('asks on Insights and not on Now', async ({ page }) => {
+    /*
+     * D-169 puts the review loop on Insights and the domain pages, and this is
+     * the other half of the same subject: what the app has worked out sits
+     * below it, and this is what it has not.
+     *
+     * It was on Life first, and `shell.spec.ts` is why it is not: Life is held
+     * to about a screen and a half on a 360-wide phone, and one closed line
+     * with no panel around it still left it over. A measured constraint saying
+     * no is a placement decision, not an obstacle.
+     */
+    await loadInQa(page, 'The first evening')
+
+    await go(page, 'Insights')
+    /*
+     * Closed until tapped, like every other control on a Life surface, and the
+     * closed line says nothing about which area it is about — Life names every
+     * area exactly once and a prompt that named one would make it twice.
+     */
+    await expect(page.getByTestId('discovery-closed')).toBeVisible()
+    await page.getByTestId('discovery-open').click()
+    await expect(page.getByTestId('discovery-prompt')).toBeVisible()
+    await expect(page.getByTestId('discovery-leave')).toBeVisible()
+
+    await go(page, 'Now')
+    await expect(page.getByTestId('discovery-prompt')).toHaveCount(0)
+    await expect(page.getByTestId('discovery-closed')).toHaveCount(0)
+  })
+
+  test('respects a skip', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Insights')
+
+    await page.getByTestId('discovery-open').click()
+    const asked = await page.locator('[data-testid="discovery-prompt"] label').first().innerText()
+    await page.getByTestId('discovery-leave').click()
+
+    await expect(page.getByTestId('discovery-closed')).toBeVisible()
+    await page.getByTestId('discovery-open').click()
+    await expect(
+      page.locator('[data-testid="discovery-prompt"] label'),
+      'the skipped prompt came back',
+    ).not.toHaveText(asked)
+  })
+
+  test('shows what an answer changed', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Insights')
+
+    await page.getByTestId('discovery-open').click()
+    await page.getByTestId('discovery-answer').fill('Working as a cloud engineer')
+    await page.getByTestId('discovery-save').click()
+
+    await page.getByTestId('discovery-changes-open').click()
+    await expect(page.getByTestId('discovery-changes')).toBeVisible()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA round 1 — the five defects, on the screens they were reported from
+// ---------------------------------------------------------------------------
+
+test.describe('what independent QA found on the deployed build', () => {
+  test('QA-84-001 — a Health destination alone changes what Now suggests', async ({ page }) => {
+    /*
+     * The counterfactual, twice through the same store, with identical answers
+     * and no other destination anywhere. QA reproduced this by hand and got the
+     * same walk byte for byte; there was no browser case that would have.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    const before = await page.locator('.primary-surface__headline').innerText()
+    expect(before).toContain('walk')
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Strong enough to keep up with her')
+    await page.getByTestId('destination-milestone-input').fill('Lift twice each week')
+    await page.getByTestId('destination-save').click()
+    await expect(page.getByTestId('destination-aim')).toBeVisible()
+
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    const after = await page.locator('.primary-surface__headline').innerText()
+    expect(after, 'a Health destination changed nothing on Now').not.toBe(before)
+    expect(after).toContain('Lift twice each week')
+    // And no duration was invented for a step the app has never seen.
+    expect(after).not.toMatch(/\d+ minutes/)
+  })
+
+  test('QA-84-002 — partial work reads as partial on the page that counts it', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    const actions = page.getByTestId('now-actions')
+    await actions.getByRole('button', { name: 'Start it' }).click()
+    await actions.getByRole('button', { name: 'Only part of it' }).click()
+    await expect(page.locator('.rows')).toContainText('Part done')
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    // The rung it belongs on, and not the one above it.
+    await expect(page.getByTestId('progress-part-done')).toBeVisible()
+    await expect(page.getByTestId('progress-completion')).toHaveCount(0)
+
+    // And the same event, worded the same way, in the correction list.
+    const screen = await page.locator('.screen').innerText()
+    expect(screen).not.toContain('Followed through')
+    expect(screen).toContain('Got part of the way')
+  })
+
+  test('QA-84-003 — a course finished through the ordinary controls shows as a course', async ({
+    page,
+  }) => {
+    /*
+     * **Two sessions in** is the one history in the library that holds a course
+     * at all, and it sits one occasion from the end — so the whole flow is the
+     * final session, through the buttons an owner presses.
+     *
+     * An earlier version drove three occasions from the near-empty store across
+     * six days of travel. It proved the same thing and it was flaky, because
+     * whether a recovery move is on screen after travelling depends on what the
+     * guide decides to ask — and a browser case whose setup can fail for a
+     * reason unrelated to its subject is worse than no browser case. The
+     * multi-day walk is held in the synthetic instrument, which can drive the
+     * clock exactly.
+     *
+     * That the library contains exactly one course, and that it had never been
+     * finished, is why `state === 'done'` survived in three separate readers.
+     */
+    await loadInQa(page, 'Two sessions in')
+    await go(page, 'Now')
+
+    const actions = page.getByTestId('now-actions')
+    await expect(actions, 'the third session was not offered').toBeVisible()
+    const start = actions.getByRole('button', { name: 'Start it' })
+    await expect(start).toBeEnabled({ timeout: 15_000 })
+    await start.click()
+    const done = actions.getByRole('button', { name: 'Done', exact: true })
+    await expect(done).toBeEnabled({ timeout: 15_000 })
+    await done.click()
+
+    await page.goto(`${APP}#/life/career`)
+    // Three different things, and the page says three different things.
+    await expect(page.getByTestId('progress-courses')).toBeVisible()
+    await expect(page.getByTestId('progress-completion')).toBeVisible()
+    await expect(page.getByTestId('progress-milestone')).toHaveCount(0)
+  })
+
+  test('QA-84-004 — the weekly question asks for a day of the week', async ({ page }) => {
+    /*
+     * What the question asks for is what the form accepts. It asked about a
+     * regular chunk of the week and offered a calendar date, and stored one
+     * dated occurrence.
+     */
+    test.setTimeout(120_000)
+    await loadInQa(page, 'The first evening')
+
+    /*
+     * The agenda is deliberately slow: three aspiration questions come before
+     * the weekly one and only two are put in a week (D-163, D-184). So an
+     * owner reaches this question in his second week, and the test travels
+     * rather than pretending he would not have to.
+     */
+    let asked = ''
+    for (let round = 0; round < 8; round += 1) {
+      await go(page, 'Insights')
+      if (!(await page.getByTestId('discovery-closed').isVisible())) {
+        await travel(page, '+1 week', 1)
+        continue
+      }
+      await page.getByTestId('discovery-open').click()
+      asked = await page.locator('[data-testid="discovery-prompt"] label').first().innerText()
+      if (asked.includes('regular chunk')) break
+      await page.getByTestId('discovery-leave').click()
+    }
+
+    const label = asked
+    expect(label, 'the agenda never reached the weekly question').toContain('regular chunk')
+    const day = page.getByTestId('discovery-day')
+    await expect(day).toBeVisible()
+    // A day of the week, not a date in a month.
+    expect(await day.evaluate((node) => node.tagName)).toBe('SELECT')
+    await expect(day).toContainText('Wednesday')
+  })
+
+  test('QA-84-005 — a blank next step is not confirmed as one', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await page.goto(`${APP}#/life/career`)
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Working as a cloud engineer')
+
+    // The optional box is empty, and the confirmation says so.
+    const form = page.getByTestId('destination-form')
+    await expect(form).toContainText('nothing is created')
+    await expect(form).not.toContainText('The next step in Career & Learning: “that”')
+    await expect(form).not.toContainText('currently studying')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner addendum — two corrections from real use, on the screens they
+// were reported from. Neither is a QA finding.
+// ---------------------------------------------------------------------------
+
+test.describe('owner addendum — “I can’t leave, someone’s in my care”', () => {
+  test('is on the list, and writes something that survives the evening', async ({ page }) => {
+    /*
+     * The owner's case on the deployed build: Now offered a walk while his
+     * daughter was asleep and there was nobody else to watch her. The nearest
+     * of the seven causes was *"Someone needed me"*, which is wrong twice —
+     * nobody needed his time, he was not free to leave — and `standing: false`,
+     * so it wrote nothing durable at all.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    /*
+     * An ordinary evening, named rather than taken. `untilThereIsAMove` presses
+     * whatever is first, which for energy is *"Running on empty"* — a recovery
+     * evening, where the app may correctly decide the answer would change
+     * nothing and say so instead of asking (D-164). This case is about the
+     * question, so it asks for the evening the question is put on.
+     */
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    await expect(asked, 'the app did not ask what was in the way').toBeVisible()
+
+    const option = page.getByTestId('blocker-must-stay')
+    await expect(option, 'the eighth cause is not offered').toBeVisible()
+    await expect(option).toContainText('in my care')
+    await option.click()
+    await expect(asked).toHaveCount(0)
+
+    // Durable, and on the page for the area the move belonged to — across a
+    // reload, which is what "durable" has to mean on a phone.
+    await page.goto(`${APP}#/life/health-recovery`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Health & Recovery' })).toBeVisible()
+    await page.reload()
+    const standing = page.getByTestId('domain-blocker')
+    await expect(standing.first()).toContainText('someone was in my care')
+
+    // And withdrawable, which is the way out the question always offers.
+    await page.getByTestId('domain-blocker-lift').first().click()
+    await expect(page.getByTestId('domain-blocker')).toHaveCount(0)
+  })
+
+  test('promises nothing about what the app will suggest next — D-187', async ({ page }) => {
+    /*
+     * Nothing in the engine reads a blocker constraint: `applyConstraints`
+     * never looks at `situation.constraints`, and `cautionsFor` matches a
+     * constraint's concept against a candidate's `leansOn`, which never holds a
+     * `blocker.*` concept. So a sentence saying the walk will stop being
+     * offered would be falsifiable by the owner within one evening.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    await expect(asked).toBeVisible()
+    /*
+     * The same rule the synthetic suite and the Android gate apply, from the
+     * same module — QA-84-010. Three narrower copies of one blacklist existed
+     * here, and all three passed while the deployed note promised *"the app can
+     * offer something that fits next time"*.
+     */
+    for (const sentence of await everySentenceIn(asked)) {
+      expect(
+        adaptationClaims(sentence),
+        `the question promised a change the engine cannot make: “${sentence}”`,
+      ).toEqual([])
+    }
+
+    await page.getByTestId('blocker-must-stay').click()
+    await page.goto(`${APP}#/life/health-recovery`)
+    const standing = page.getByTestId('domain-blocker')
+    await expect(standing.first()).toBeVisible()
+
+    /*
+     * The whole panel, not the row — QA-84-012. The title and the paragraph
+     * above the rows are the copy that was outside every gate.
+     */
+    const panel = page.locator('.panel', { has: page.getByTestId('domain-blocker') }).first()
+    const sentences = await everySentenceIn(panel)
+    expect(sentences.length, 'the panel read as empty').toBeGreaterThan(3)
+    for (const sentence of sentences) {
+      expect(
+        adaptationClaims(sentence),
+        `the standing panel promised a change the engine cannot make: “${sentence}”`,
+      ).toEqual([])
+    }
+
+    // And every sentence of it that is the app's own is one somebody approved.
+    const statement = 'a walk means leaving, and I could not — someone was in my care.'
+    const appsOwn = sentences
+      .map((line) => line.split(statement).join('{statement}'))
+      .filter((line) => line !== '{statement}' && !line.startsWith('Not true any more: '))
+    for (const sentence of appsOwn) {
+      expect(
+        containsApprovedBlockerCopy(sentence),
+        `the standing panel rendered copy nobody approved: “${sentence}”`,
+      ).toBe(true)
+    }
+  })
+})
+
+test.describe('owner addendum — the discovery card says what it will do first', () => {
+  test('shows the interpretation, what it makes and what it will not assume', async ({ page }) => {
+    /*
+     * The owner typed **More money** into the Career prompt and pressed *That
+     * is it*, believing he had confirmed an interpretation. The branch went
+     * straight to the record builder, and the panel one screen away has had the
+     * whole contract since package 3.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Insights')
+    await page.getByTestId('discovery-open').click()
+
+    // Nothing to confirm until there is something to confirm.
+    await expect(page.getByTestId('discovery-proposal')).toHaveCount(0)
+    await expect(page.getByTestId('discovery-save')).toBeDisabled()
+
+    await page.getByTestId('discovery-answer').fill('More money')
+    const proposal = page.getByTestId('discovery-proposal')
+    await expect(proposal).toBeVisible()
+    await expect(proposal, 'his words were not shown back to him').toContainText('More money')
+    await expect(proposal).toContainText('Career & Learning')
+    await expect(page.getByTestId('discovery-unknowns')).toContainText('the next step')
+    await expect(page.getByTestId('discovery-save')).toBeEnabled()
+  })
+
+  test('and writes nothing at all if he leaves it', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Insights')
+    await page.getByTestId('discovery-open').click()
+    await page.getByTestId('discovery-answer').fill('More money')
+    await expect(page.getByTestId('discovery-proposal')).toBeVisible()
+
+    await page.getByTestId('discovery-leave').click()
+    await expect(page.getByTestId('discovery-prompt')).toHaveCount(0)
+
+    // Career has no aspiration on it: reading a proposal is not agreeing to one.
+    await openCareer(page)
+    await expect(page.locator('body')).not.toContainText('More money')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA round 2 — the four the retest found, on the screens they were found on
+// ---------------------------------------------------------------------------
+
+test.describe('what independent QA found on the repaired build', () => {
+  test('QA-84-007 — a first-run store offers ordinary ways on, not a developer tool', async ({
+    page,
+  }) => {
+    /*
+     * A genuinely fresh store: no scenario, no QA laboratory. The abstention is
+     * unchanged and is right — the engine will not guess — but abstaining from a
+     * recommendation is not the same as having nothing to offer.
+     */
+    await page.goto(APP)
+    await expect(page.getByRole('heading', { level: 1, name: 'Now' })).toBeVisible()
+    await expect(page.locator('.primary-surface__headline')).toContainText('no history here yet')
+
+    await expect(page.getByTestId('empty-to-insights')).toBeVisible()
+    await expect(page.getByTestId('empty-to-life')).toBeVisible()
+
+    // And nothing was invented to fill the screen.
+    await expect(page.getByTestId('now-actions')).toHaveCount(0)
+  })
+
+  test('QA-84-007 — and Life and its pages carry their controls on an empty store', async ({
+    page,
+  }) => {
+    await page.goto(`${APP}#/life`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Life' })).toBeVisible()
+    await expect(
+      page.getByRole('link', { name: 'Career & Learning' }),
+      'Life listed no areas on a first run',
+    ).toBeVisible()
+
+    await openCareer(page)
+    await expect(
+      page.getByTestId('destination-open'),
+      'the aspiration control was switched off by an empty history',
+    ).toBeVisible()
+    await expect(page.getByTestId('authoring-kinds')).toBeVisible()
+  })
+
+  test('QA-84-008 — what Health promises is what Health then does', async ({ page }) => {
+    /*
+     * The contradiction QA met in two consecutive screens: the form said the
+     * app would **not** start suggesting the step, and the next screen suggested
+     * it. Both halves are read here, in one case, in the order the owner met
+     * them.
+     */
+    await loadInQa(page, 'The first evening')
+    await page.goto(`${APP}#/life/health-recovery`)
+    await page.getByTestId('destination-open').click()
+    await page.getByTestId('destination-aim-input').fill('Build sustainable strength')
+    await page.getByTestId('destination-milestone-input').fill('Lift twice each week')
+
+    const form = page.getByTestId('destination-form')
+    const promise = await form.innerText()
+    expect(promise, 'the form still denies the suggestion it is about to make').not.toMatch(
+      /will not start suggesting/,
+    )
+    expect(promise).toMatch(/start suggesting it/)
+
+    await page.getByTestId('destination-save').click()
+    await expect(page.getByTestId('destination-aim')).toContainText('Build sustainable strength')
+
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await expect(
+      page.locator('.primary-surface__headline'),
+      'the step was promised and not proposed',
+    ).toContainText('Lift twice each week')
+  })
+
+  test('QA-84-009 — Timeline does not call a partial completion Done', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    const actions = page.getByTestId('now-actions')
+    await actions.getByRole('button', { name: 'Start it' }).click()
+    await expect(actions.getByRole('button', { name: 'Only part of it' })).toBeEnabled()
+    await actions.getByRole('button', { name: 'Only part of it' }).click()
+    await expect(page.locator('.rows')).toContainText('Part done')
+
+    await go(page, 'Timeline')
+    /*
+     * The whole row, not the sentence. The defect was that the tag and the
+     * sentence sat one above the other and said opposite things, so reading
+     * either one alone is how it survived a round.
+     */
+    const row = page
+      .locator('.timeline__entry, .tl-entry, li')
+      .filter({ hasText: 'Got part of the way' })
+      .first()
+    await expect(row).toBeVisible()
+    const text = await row.innerText()
+    expect(text, 'the tag above the sentence still says Done').not.toMatch(/\bDone\b/)
+    expect(text).toMatch(/Part done/)
+  })
+
+  test('QA-84-010 — the blocker note claims nothing the engine does not do', async ({ page }) => {
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    await expect(asked).toBeVisible()
+    const note = await asked.innerText()
+
+    // The exact string QA read, gone.
+    expect(note).not.toMatch(/offer something that fits next time/)
+    expect(note).not.toMatch(/stop putting it in front of you/)
+    // And both halves of the shared guard, from the module all three gates use:
+    // the class net, and the catalogue the copy has to come from.
+    expect(adaptationClaims(note), 'the note promised a future adaptation').toEqual([])
+    expect(
+      containsApprovedBlockerCopy(note),
+      'the question rendered copy that is not in APPROVED_BLOCKER_COPY',
+    ).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA-84-015 — what is on screen *because* the blocker is
+// ---------------------------------------------------------------------------
+
+/**
+ * Every sentence the whole screen is showing.
+ *
+ * The screen, not a panel. Round 7's escape was a sentence written **beside**
+ * the blocker question by the screen that renders it, and every check this phase
+ * had was scoped to the question's own subtree.
+ */
+async function everySentenceOnScreen(page: Page): Promise<readonly string[]> {
+  /*
+   * Read when the screen has stopped changing — QA-84-026, D-200.
+   *
+   * This used to click, wait for one child to disappear, and read. Round 10
+   * caught it: dismissing the blocker question also rewrites the rest of Now,
+   * and the write can land **after** that child has gone. The set difference
+   * then attributes the whole previous decision screen to the blocker, and the
+   * gate fails on eleven ordinary lines that nobody put there. It passed on a
+   * rerun, which is the definition of the problem.
+   *
+   * **A whole-screen comparison needs a whole-screen stability condition.** So
+   * the screen is read until two consecutive reads agree: the thing being
+   * measured is what settles, rather than a proxy for it.
+   */
+  let last: string[] = []
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const now = (await page.locator('.screen').evaluate(readingUnits)).map((unit) => unit.text)
+    if (attempt > 0 && now.length === last.length && now.every((line, at) => line === last[at])) {
+      return now
+    }
+    last = now
+    await page.waitForTimeout(100)
+  }
+  return last
+}
+
+test.describe('what is on screen because the blocker is', () => {
+  test('QA-84-015 — the blocker question brings only approved copy with it', async ({ page }) => {
+    /*
+     * The check Round 7's Proof B asked for, and the reason it is a **delta**.
+     *
+     * `blockerSurfacesInSource()` finds components by the blocker types in their
+     * props. `NowScreen` takes none — it derives `blocked` and `blockerDecision`
+     * from local state — so a sentence written beside `<BlockerQuestion>` inside
+     * the same branch was invisible to every enumeration this phase had, and the
+     * synthetic catalogue passed 13/13 while the browser case passed 3/3.
+     *
+     * What a parent cannot avoid is that its sentence appears **with** the
+     * question and goes **with** it. So: read the whole screen with the question
+     * up, dismiss it with the control the app already offers, read the whole
+     * screen again, and require everything in the difference to be approved
+     * copy. That is exactly "what is on screen because the blocker is",
+     * wherever it was written and whatever the writer takes as props.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    await expect(asked).toBeVisible()
+    const withQuestion = await everySentenceOnScreen(page)
+
+    await page.getByTestId('blocker-leave').click()
+    await expect(asked).toHaveCount(0)
+    const without = new Set(await everySentenceOnScreen(page))
+
+    const brought = withQuestion.filter((line) => !without.has(line))
+    expect(
+      brought.length,
+      'dismissing the question changed nothing, so nothing was compared',
+    ).toBeGreaterThan(3)
+
+    const unapproved = brought.filter(
+      (line) => !isApprovedBlockerCopy(line) && !containsApprovedBlockerCopy(line),
+    )
+    expect(
+      unapproved,
+      'the blocker question brought copy nobody approved onto the screen with it',
+    ).toEqual([])
+
+    for (const line of brought) {
+      expect(adaptationClaims(line), `“${line}” promised a future adaptation`).toEqual([])
+    }
+  })
+
+  test('QA-84-015 — and so does the standing blocker on a domain page', async ({ page }) => {
+    /*
+     * The same delta on the other host. `DomainPage` renders `BlockersPanel`,
+     * and the way to make the panel go is the control the owner already has.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+    await page.getByTestId('blocker-must-stay').click()
+
+    await page.goto(`${APP}#/life/health-recovery`)
+    await expect(page.getByTestId('domain-blocker').first()).toBeVisible()
+    const withBlocker = await everySentenceOnScreen(page)
+
+    await page.getByTestId('domain-blocker-lift').first().click()
+    await expect(page.getByTestId('domain-blocker')).toHaveCount(0)
+    const without = new Set(await everySentenceOnScreen(page))
+
+    const statement = 'a walk means leaving, and I could not — someone was in my care.'
+    const brought = withBlocker
+      .filter((line) => !without.has(line))
+      .map((line) => line.split(statement).join('{statement}'))
+    expect(brought.length, 'lifting it changed nothing, so nothing was compared').toBeGreaterThan(2)
+
+    const unapproved = brought.filter(
+      (line) =>
+        line !== '{statement}' &&
+        !line.startsWith('Not true any more: ') &&
+        !isApprovedBlockerCopy(line) &&
+        !containsApprovedBlockerCopy(line),
+    )
+    expect(
+      unapproved,
+      'the standing blocker panel brought copy nobody approved onto the page with it',
+    ).toEqual([])
+
+    for (const line of brought) {
+      expect(adaptationClaims(line), `“${line}” promised a future adaptation`).toEqual([])
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA-84-016 and QA-84-018 — every screen the owner can reach, not every
+// component somebody could name
+// ---------------------------------------------------------------------------
+
+/**
+ * Every screen the owner can reach — QA-84-019, D-199.
+ *
+ * Round 8's version read the `.nav` buttons and the `#/life/` links on Life,
+ * and its comment claimed a fifth destination would "join the sweep by
+ * existing". **That was false, and Round 9 proved it in one line.** `More` is
+ * behind a button in the header, not in the bottom bar; `Data` is behind a link
+ * on More, not on Life. Neither was ever visited, and a plain future-tense
+ * promise added to the Data screen passed all three widths.
+ *
+ * The lesson is the campaign's own, one level up: **a coverage claim taken from
+ * one navigation surface is a claim about that surface, not about the app.**
+ * Two surfaces are no better than one; the fix is not to add the header.
+ *
+ * ## So the route set comes from the routing contract, and then from the links
+ *
+ * `routing.ts` is where a destination becomes a destination — nothing is
+ * reachable that it does not declare, because `destinationFromHash` sends
+ * anything else to Now. So the seeds are read from that file, and the crawl
+ * then follows every `#/` link it finds on every screen it visits, to a fixed
+ * point. Sub-pages like `#/life/health-recovery` arrive that way, and so would
+ * any screen reached from anywhere by a link.
+ *
+ * It is read as **text** rather than imported: `routing.ts` imports
+ * `buildInfo.ts`, which reads Vite's compile-time defines, and importing it
+ * from a spec throws `__LCOS_COMMIT_SHA__ is not defined` (D-197). The read is
+ * two `as const` arrays and nothing else — deliberately not a parser (D-197
+ * again) — and it fails loudly if either array stops being found.
+ *
+ * ## The one exclusion, and why it is not a choice
+ *
+ * `#/qa` is excluded. It is not a screen the product offers: `QA_AVAILABLE` is
+ * `!isProduction`, so in production the route resolves to Now and the screen's
+ * code is never downloaded. The check below fails if that stops being true, so
+ * the exclusion cannot outlive its reason.
+ */
+function declaredRoutes(): readonly string[] {
+  const source = readFileSync(join(process.cwd(), 'src/platform/routing.ts'), 'utf8')
+
+  const declared = (name: string): readonly string[] => {
+    /*
+     * `indexOf` rather than a regex, because the regex spelling of this is a
+     * trap: `\[` inside a template literal collapses to `[`, and the pattern
+     * that reaches `RegExp` is an unbalanced character class that throws where
+     * it stands. Two string searches cannot be got wrong that way.
+     */
+    const at = source.indexOf(`export const ${name} = [`)
+    expect(at, `routing.ts no longer declares ${name} as a literal array`).toBeGreaterThan(-1)
+    const close = source.indexOf(']', at)
+    const names = [...source.slice(at, close).matchAll(/'([a-z-]+)'/g)].map(
+      (match) => match[1] ?? '',
+    )
+    expect(
+      names.length,
+      `${name} read as empty — the source read has stopped working`,
+    ).toBeGreaterThan(0)
+    return names
+  }
+
+  const primary = declared('PRIMARY_DESTINATIONS')
+  const secondary = declared('SECONDARY_DESTINATIONS')
+
+  // The exclusion below is only honest while the laboratory is non-production.
+  expect(
+    source.includes('QA_AVAILABLE = !isProduction'),
+    'the QA laboratory is no longer production-gated, so the sweep may not skip it',
+  ).toBe(true)
+
+  return [...primary, ...secondary].filter((name) => name !== 'qa').map((name) => `#/${name}`)
+}
+
+/**
+ * Frames that arrive after the collector looked — QA-84-035, and frames that
+ * leave before it looks — QA-84-040.
+ *
+ * `page.frames()` is a snapshot. Round 12 attached an iframe ten seconds after
+ * mount, so every sweep read More and left before it existed. **Enumerating the
+ * frame tree at read time is not a rule about frames**, so the page is
+ * subscribed to instead.
+ *
+ * Round 13 then went the other way: a frame that attached and was removed ten
+ * milliseconds later. It *was* remembered — and the final pass skipped it,
+ * because it was detached by then. **Remembering an object is not reading it**,
+ * and `continue` on a detached frame turned the claim *every frame that ever
+ * attached is read* into *every frame that survived until the end*.
+ *
+ * So the read starts when the frame attaches, not at the end, and the promise
+ * it returns is kept. A frame that could not be read is then **reported as a
+ * hole** rather than skipped — the same rule Round 11 set for a frame that
+ * cannot be entered. That is deliberately strict: the product attaches no
+ * frames at all, so anything unreadable here is something new that nobody has
+ * looked at.
+ *
+ * It still does not close the timing question — a frame attached after the
+ * suite has finished is outside any of this, and D-203 says so. What closes the
+ * content is the static scan, which does not care when a frame appears.
+ */
+interface RememberedFrame {
+  readonly frame: Frame
+  readonly reading: Promise<readonly ReadingUnit[] | null>
+}
+
+function rememberFrames(page: Page): RememberedFrame[] {
+  const attached: RememberedFrame[] = []
+  page.on('frameattached', (frame) => {
+    const reading = frame
+      .locator('body')
+      .evaluate(readingUnits)
+      .then((units) => units as readonly ReadingUnit[])
+      .catch((error: unknown) => {
+        const why = error instanceof Error ? error.message : String(error)
+        if (!/cross-origin|detached|Target closed|Execution context/i.test(why)) throw error
+        return null
+      })
+    attached.push({ frame, reading })
+  })
+  return attached
+}
+
+/**
+ * Every reading unit in every browsing context on the page — QA-84-028.
+ *
+ * `readingUnits` walks one document. Round 11 put the prohibited sentence in a
+ * same-origin `<iframe srcDoc>` on More: visible on a crawled ordinary route,
+ * and invisible to a collector that only ever entered the outer document.
+ * **Reading a document's nodes is not reading everything the browser renders
+ * inside it.**
+ *
+ * Playwright already enumerates the frame tree, so every frame is asked. A
+ * cross-origin frame cannot be read from the page's context — the product has
+ * none, and the count below fails if one ever appears without this being
+ * revisited.
+ */
+/**
+ * What the remembered frames turned out to say, and what went unread.
+ *
+ * Shared by both sweeps deliberately. Round 12 put the remembered-frame read in
+ * the route crawl alone, so the press sweep — the one that reaches the states a
+ * frame is most likely to be created in — still only ever saw a snapshot. **A
+ * rule applied in one of two places is the mistake this campaign has made more
+ * often than any other**, so there is one implementation and both callers use
+ * it.
+ */
+async function unitsFromRememberedFrames(
+  attached: readonly RememberedFrame[],
+): Promise<readonly ReadingUnit[]> {
+  const out: ReadingUnit[] = []
+  const unread: string[] = []
+  for (const { frame, reading } of attached) {
+    const units = await reading
+    if (units === null) {
+      unread.push(frame.url() || '(no url)')
+      continue
+    }
+    out.push(...units)
+  }
+  expect(
+    unread,
+    'a frame appeared and could not be read, so nobody can say what it put on the screen',
+  ).toEqual([])
+  return out
+}
+
+/** What the screen currently calls itself, or '' while it has no heading. */
+async function headingOf(page: Page): Promise<string> {
+  try {
+    return (await page.locator('h1').first().innerText({ timeout: 1000 })).trim()
+  } catch {
+    return ''
+  }
+}
+
+async function unitsEverywhere(page: Page): Promise<readonly ReadingUnit[]> {
+  const out: ReadingUnit[] = []
+
+  /*
+   * Exactly one control may claim to be the composed review — QA-84-036.
+   *
+   * Round 12 rendered a second read-only textarea carrying the same
+   * `data-testid`, the same accessible label, and an unapproved value, and the
+   * collector believed it. **Carrying the marker is an assertion of provenance,
+   * not proof of one**, and the only thing that makes the assertion checkable
+   * is that the app composes exactly one such document. If a second appears,
+   * this says so rather than trusting either.
+   */
+  /*
+   * Exactly one control may claim to be the composed review — QA-84-036 — and
+   * only where that claim has been proved — QA-84-049.
+   *
+   * Round 12 rendered a second read-only textarea carrying the same
+   * `data-testid`, the same accessible label and an unapproved value, and the
+   * collector believed it. **Carrying the marker is an assertion of provenance,
+   * not proof of one**, and the only thing that makes the assertion checkable
+   * is that the app composes exactly one such document.
+   *
+   * Round 15 then obeyed that rule and broke the next one: it left the real
+   * export alone and put a second marked control on **More**, so every page
+   * still had at most one, the identity test never visited the impostor, and
+   * the crawl that did visit it honoured the exemption it had granted itself.
+   * **An exemption is only worth what proved it**, and what proves this one is
+   * a test of the composed review on the export screen.
+   *
+   * The screen is read as well as the address, and the count is read after both
+   * agree. A press that navigates changes the URL before React has replaced the
+   * document, so a rule keyed on the address alone accuses the honest product
+   * halfway through a hash navigation, and a count taken before the new screen
+   * arrives belongs to the old one. That is D-200's race arriving from two new
+   * directions at once, and settling first is the same answer.
+   */
+  let address = page.url()
+  let screen = await headingOf(page)
+  for (
+    let attempt = 0;
+    attempt < 20 && address.includes('#/data') !== (screen === 'Data');
+    attempt += 1
+  ) {
+    await page.waitForTimeout(50)
+    address = page.url()
+    screen = await headingOf(page)
+  }
+
+  const marked = await page.locator('[data-testid="export-text"]').count()
+  expect(
+    marked,
+    'more than one control claims to be the composed review, so provenance cannot be trusted',
+  ).toBeLessThanOrEqual(1)
+
+  if (marked > 0) {
+    expect(
+      `${screen} at ${address.slice(address.indexOf('#'))}`,
+      'a control claims to be the composed review on a screen where nothing proves it is',
+    ).toBe('Data at #/data')
+  }
+
+  for (const frame of page.frames()) {
+    try {
+      out.push(...(await frame.locator('body').evaluate(readingUnits)))
+    } catch (error) {
+      /*
+       * Only a frame this page genuinely cannot read is tolerated, and even
+       * then it is **reported** rather than skipped, because it is a hole in
+       * the claim. Anything else is a fault in the collector and is rethrown —
+       * the first draft swallowed a `ReferenceError` from a half-applied edit
+       * and reported every frame unreadable, which looked exactly like a
+       * finding and was not.
+       */
+      const why = error instanceof Error ? error.message : String(error)
+      if (!/cross-origin|detached|Target closed/i.test(why)) throw error
+      out.push({ text: `UNREADABLE FRAME: ${frame.url()} — ${why}`, generated: false })
+    }
+  }
+  return out
+}
+
+/** Every `#/` link on the page, wherever it is — header, screen or footer. */
+async function linksOn(page: Page): Promise<readonly string[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('a[href]')]
+      .map((link) => link.getAttribute('href') ?? '')
+      .filter((href) => href.includes('#/'))
+      .map((href) => href.slice(href.indexOf('#/'))),
+  )
+}
+
+/**
+ * Every string on every screen the owner can reach, and which of them are prose.
+ *
+ * The whole document rather than `.screen`, because the owner reads the header
+ * too, and a promise written into the app's chrome would appear on every screen
+ * while belonging to none of them.
+ *
+ * Two sets come back, and the difference between them is the honest part.
+ *
+ * `everything` is what the owner can read anywhere. **The promise check runs
+ * over all of it** — that is D-187's rule and it should be as wide as the app.
+ *
+ * `prose` is that minus the composed review, and it is what the **catalogue**
+ * check runs over. Data shows the export in a `<textarea>`, so blocking a move
+ * rewrites that document — dozens of generated lines enter the delta, none of
+ * which is copy anybody wrote for the blocker path. Approving them by name
+ * would mean listing every line of every document the app can compose, and the
+ * list would be wrong again on the next record.
+ *
+ * **The exclusion is not a promise that the document is safe.** It is guarded,
+ * line by line, over **every selectable section**, in
+ * `tests/synthetic/blocker-copy.test.tsx` — which is where Round 9's
+ * QA-84-021 mutation now fails. What is excluded here is proved there, and the
+ * subtraction is checked rather than trusted: the composed document must be
+ * non-empty, so this cannot quietly start subtracting nothing — or everything.
+ */
+async function sweepEveryRoute(page: Page): Promise<{
+  everything: ReadonlySet<string>
+  prose: ReadonlySet<string>
+}> {
+  const attached = rememberFrames(page)
+  const queue = [...declaredRoutes()]
+  const visited = new Set<string>()
+  const everything = new Set<string>()
+  const generated = new Set<string>()
+  const prosed = new Set<string>()
+
+  while (queue.length > 0) {
+    const route = queue.shift()
+    if (route === undefined || visited.has(route) || route.startsWith('#/qa')) continue
+    visited.add(route)
+
+    await page.goto(`${APP}${route}`)
+    await page.waitForSelector('h1')
+    for (const unit of await unitsEverywhere(page)) {
+      everything.add(unit.text)
+      if (unit.generated) generated.add(unit.text)
+      else prosed.add(unit.text)
+    }
+
+    for (const href of await linksOn(page)) if (!visited.has(href)) queue.push(href)
+  }
+
+  /*
+   * And every frame the session ever attached — QA-84-035, QA-84-040. The read
+   * began the moment each one appeared, so a frame that has since gone is still
+   * accounted for; what is collected here is the answer, not a second look.
+   */
+  for (const unit of await unitsFromRememberedFrames(attached)) {
+    everything.add(unit.text)
+    if (!unit.generated) prosed.add(unit.text)
+  }
+
+  expect(visited.size, 'the crawl found almost no screens').toBeGreaterThan(10)
+
+  /*
+   * And the one parameterised family, counted.
+   *
+   * Destinations cannot be missed — they are seeded from the contract. The
+   * `#/life/<page>` routes are not in it: they are reached by following Life's
+   * links, so they are the part of the crawl that could silently stop working.
+   * The plan fixes the count at ten baseline pages (D-078, D-168), so a link
+   * that stops being a link fails here rather than quietly shrinking coverage.
+   */
+  const pages = [...visited].filter((route) => route.startsWith('#/life/'))
+  expect(pages.length, 'the crawl stopped following the links on Life').toBeGreaterThanOrEqual(10)
+  expect(
+    generated.size,
+    'the composed review was never found on any screen, so nothing is being subtracted',
+  ).toBeGreaterThan(20)
+
+  /*
+   * `prose` is what was **not** read from inside the composed review, decided
+   * when it was read rather than by what a string happens to look like.
+   * QA-84-024 put *"This needs special care."* on Data and the same words in
+   * the document; the value-based subtraction erased the screen's own sentence
+   * along with the generated one. A string that appears in both places is
+   * prose, because the owner reads it in both places.
+   */
+  const prose = new Set([...everything].filter((line) => prosed.has(line)))
+  return { everything, prose }
+}
+
+/**
+ * Every state the owner can press into, one route at a time — QA-84-022, D-200.
+ *
+ * The crawl visits routes and reads them as they arrive. Round 10 put the
+ * prohibited sentence behind an ordinary **Read more** button on More and the
+ * whole matrix stayed green: the owner reaches the promise with one press, and
+ * nothing ever pressed. **Route reachability is not owner-state reachability**,
+ * and the concession the Round 10 dispatch offered — a parameterised sub-route
+ * — was narrower than the hole.
+ *
+ * So this presses. On each route it clicks every button in turn, reading the
+ * screen after each one, and follows the app back if a press navigated away.
+ * Presses compound on purpose: a second press from a changed screen is another
+ * state the owner can be in, and this claim is one-directional — anything found
+ * is real, and more states can only find more.
+ *
+ * **It is deliberately not the delta's sweep.** The catalogue comparison needs
+ * two states that differ by exactly one cause; this one wanders. It answers
+ * only the question that does not need a controlled comparison: *is there a
+ * promise anywhere the owner can get to.*
+ *
+ * Each click is given a short timeout and its failure is swallowed. A button
+ * that refuses, a dialog, a control that has gone: none of those is a finding,
+ * and a sweep that fails on them would be a gate about timing rather than about
+ * copy — which is exactly what QA-84-026 was.
+ */
+async function sweepEveryPress(page: Page): Promise<ReadonlySet<string>> {
+  const seen = new Set<string>()
+  const attached = rememberFrames(page)
+  page.on('dialog', (dialog) => void dialog.dismiss().catch(() => {}))
+
+  for (const route of declaredRoutes()) {
+    if (route.startsWith('#/qa')) continue
+    await page.goto(`${APP}${route}`)
+    await page.waitForSelector('h1')
+
+    const collect = async () => {
+      for (const unit of await unitsEverywhere(page)) seen.add(unit.text)
+    }
+    await collect()
+
+    const buttons = await page.locator('button').count()
+    for (let at = 0; at < Math.min(buttons, PRESSES_PER_ROUTE); at += 1) {
+      try {
+        await page.locator('button').nth(at).click({ timeout: 1500 })
+      } catch {
+        continue
+      }
+      await collect()
+      if (!page.url().endsWith(route)) {
+        await page.goto(`${APP}${route}`)
+        await page.waitForSelector('h1')
+      }
+    }
+  }
+
+  for (const unit of await unitsFromRememberedFrames(attached)) seen.add(unit.text)
+  return seen
+}
+
+/**
+ * How many controls one route is pressed through.
+ *
+ * Not a claim that a route has no more than this: a bound, declared, so the
+ * cost of the sweep is knowable. Every route in the product is well under it,
+ * and the check below fails if one stops being.
+ */
+const PRESSES_PER_ROUTE = 40
+
+/**
+ * The same document, composed here from the same inputs — QA-84-061.
+ *
+ * Every earlier check on the composed review compared one thing the screen
+ * showed with another thing the screen showed: a heading against a checkbox, a
+ * body against Timeline, the field against the clipboard. Round 18 corrupted
+ * `composed` itself, so the field and the clipboard delivered the same false
+ * document perfectly, and every part-wise check that touched the one honest
+ * section passed.
+ *
+ * **Two consumers of one object agree about delivery, not about composition.**
+ * So the document is composed again here, in this process, from the scenario's
+ * own history and the product's own composer — an oracle that never touches
+ * the object the screen is holding. If they differ, the screen is not showing
+ * what this history composes to.
+ *
+ * The app's identity comes from the build the browser is running, read from its
+ * own `build-info.json`, because those values are the ones the document quotes.
+ */
+async function composedHere(
+  request: APIRequestContext,
+  scenarioId: string,
+  sections: readonly string[],
+): Promise<readonly string[]> {
+  /*
+   * Relative to the configured base URL rather than to a literal port.
+   *
+   * `playwright.config.ts` takes the preview port from `LCOS_PREVIEW_PORT` so a
+   * local matrix can run beside whatever else is bound to 4173, and this was the
+   * one place the number was written out by hand — so overriding the port made
+   * this test, and only this test, ask a machine that was not serving the app.
+   * `request` already carries `baseURL`, so a relative path is both shorter and
+   * incapable of drifting from it.
+   */
+  const info = (await (await request.get(`${APP}build-info.json`)).json()) as {
+    commitSha: string
+    commitShort: string
+    branch: string
+    buildTime: string
+    target: 'preview' | 'production' | 'development'
+  }
+
+  const globals = globalThis as unknown as Record<string, unknown>
+  globals.__LCOS_COMMIT_SHA__ = info.commitSha
+  globals.__LCOS_COMMIT_SHORT__ = info.commitShort
+  globals.__LCOS_BRANCH__ = info.branch
+  globals.__LCOS_BUILD_TIME__ = info.buildTime
+  globals.__LCOS_TARGET__ = info.target
+  const { REBUILD_PHASE } = await import('../../src/platform/buildInfo')
+
+  const scenario = scenarioById(scenarioId)
+  if (scenario === undefined) throw new Error(`no scenario called ${scenarioId}`)
+  const loaded = snapshotFromWire(scenario.build())
+  const moment = {
+    now: scenario.now,
+    zone: scenario.zone,
+    weekStartsOn: scenario.weekStartsOn ?? (1 as const),
+  }
+  const view = buildView(loaded.snapshot, { now: scenario.now, zone: scenario.zone })
+  const situation = assembleSituation(view, { ...moment, domains: coreDomains })
+
+  return composeExport({
+    sections: sections as readonly ExportSectionId[],
+    situation,
+    decision: decide(view, moment),
+    insights: insightsFor(situation),
+    timeline: assembleTimeline(situation),
+    source: 'laboratory',
+    app: {
+      commitShort: info.commitShort,
+      commitSha: info.commitSha,
+      target: info.target,
+      buildTime: info.buildTime,
+      phaseNumber: REBUILD_PHASE.number,
+      phaseTitle: REBUILD_PHASE.title,
+      phaseSummary: REBUILD_PHASE.summary,
+    },
+    composedAt: { at: scenario.now, zone: scenario.zone },
+  }).text.split('\n')
+}
+
+/**
+ * The one line that legitimately differs between two composings.
+ *
+ * The product says it itself, where it sets the field: *the real moment this
+ * was composed, in the owner's real zone — a fact about the act of composing,
+ * not about the history being described*. Every other line is the history.
+ */
+const ABOUT_THE_COMPOSING = /^- Composed: /
+
+async function chosenSections(page: Page): Promise<string[]> {
+  const boxes = page.locator('input[type="checkbox"][data-testid^="section-"]')
+  const chosen: string[] = []
+  for (let index = 0; index < (await boxes.count()); index += 1) {
+    if (await boxes.nth(index).isChecked()) {
+      chosen.push(
+        String(await boxes.nth(index).getAttribute('data-testid')).replace('section-', ''),
+      )
+    }
+  }
+  return chosen
+}
+
+test.describe('everything a blocker puts on any screen', () => {
+  test('QA-84-039/043/048/053/057/061 — the composed review is what this history composes to', async ({
+    page,
+    context,
+    request,
+  }) => {
+    /*
+     * The sweep exempts the composed review from the catalogue comparison,
+     * because a document legitimately repeats sentences the screens already
+     * say. Three rounds have attacked what that exemption is granted to, and
+     * each answer was true and not sufficient.
+     *
+     * **Round 12** put a second control beside it carrying the same marker, so
+     * the marker had to be unique. **Round 13** kept the count at one and
+     * replaced the value with a long document, so a size floor was not
+     * identity. **Round 14** made the impostor respond to the section
+     * selection, so responsiveness was not identity either, and the check
+     * became: each chosen section's own heading present, each unchosen one
+     * absent. **Round 15 wrote exactly those headings over thirty invented
+     * lines.** Section membership is not section content.
+     *
+     * So the document is required to answer to **both** of the things it is
+     * composed from. Its headings must track the **selection**, which the
+     * checks below do one section at a time. And its body must track the
+     * **history**: the same selection over a different life must produce a
+     * different document. An impostor keyed on the selection alone cannot —
+     * it does not know what history it is standing in front of.
+     */
+    await loadInQa(page, 'The first evening')
+    await page.goto(`${APP}#/data`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Data' })).toBeVisible()
+
+    const review = page.locator('[data-testid="export-text"]')
+    await expect(review).toHaveCount(1)
+
+    /*
+     * And it is the document the app itself hands over — QA-84-057.
+     *
+     * Every check below establishes something about a **part**: that a heading
+     * tracks its box, that the record section's lines are the record. Round 17
+     * kept one real section and invented the other nine, and every part-wise
+     * check that touched the real one passed. **Proving one section's body does
+     * not transfer to the others**, and adding a check per section would only
+     * move the line to whichever section had none.
+     *
+     * The app already has a second way of handing the same document over: the
+     * copy control puts `composed.text` on the clipboard. Reading it back and
+     * comparing gives the whole document at once, with nothing left over for a
+     * fabricated section to hide in — an impostor that changes the field must
+     * now change the composition itself, at which point it *is* the
+     * composition. Newlines are normalised because the clipboard writes CRLF.
+     */
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await page.getByRole('button', { name: 'Copy the export' }).click()
+    const handedOver = await page.evaluate(() => navigator.clipboard.readText())
+    const plain = (text: string) => text.split('\r\n').join('\n')
+    expect(
+      plain(handedOver),
+      'the field and the copy control do not hold the same document, so the field is not the composed review',
+    ).toBe(plain(await review.inputValue()))
+    expect(
+      handedOver.length,
+      'the app copied nothing, so the comparison proves nothing',
+    ).toBeGreaterThan(0)
+
+    /*
+     * And the document is what this history composes to — QA-84-061. Composed
+     * again here, from the scenario itself, by the product's own composer,
+     * without touching the object the screen is holding.
+     */
+    const here = await composedHere(request, 'the-first-evening', await chosenSections(page))
+    const strayed = (await review.inputValue())
+      .split('\n')
+      .filter((line) => line.trim().length > 0 && !ABOUT_THE_COMPOSING.test(line))
+      .filter((line) => !here.includes(line))
+    expect(
+      strayed.slice(0, 6),
+      'the document holds lines this history does not compose to, so its body is not the history',
+    ).toEqual([])
+
+    const boxes = page.locator('input[type="checkbox"][data-testid^="section-"]')
+    const count = await boxes.count()
+    expect(
+      count,
+      'the export has no sections to select, so identity cannot be shown',
+    ).toBeGreaterThan(1)
+
+    /** Each section's own control, and the title the screen gives it. */
+    const sections: { index: number; heading: string; ticked: boolean }[] = []
+    for (let index = 0; index < count; index += 1) {
+      const box = boxes.nth(index)
+      const title = await box
+        .locator('xpath=ancestor::label[1]')
+        .locator('.data-section__title')
+        .innerText()
+      sections.push({ index, heading: `## ${title.trim()}`, ticked: await box.isChecked() })
+    }
+
+    const chosen = sections.filter((section) => section.ticked)
+    expect(chosen.length, 'no section was selected to begin with').toBeGreaterThan(1)
+
+    const whole = await review.inputValue()
+    for (const section of sections) {
+      expect(
+        whole.includes(section.heading),
+        section.ticked
+          ? `the document is missing the chosen section ${section.heading}, so it is not the composed review`
+          : `the document carries ${section.heading}, which was not chosen`,
+      ).toBe(section.ticked)
+    }
+
+    // Removing one section removes exactly its own part of the document.
+    const dropped = chosen[0]
+    if (dropped === undefined) throw new Error('unreachable: chosen is not empty')
+    await boxes.nth(dropped.index).uncheck()
+    await expect(review).not.toHaveValue(whole)
+
+    const without = await review.inputValue()
+    expect(
+      without.includes(dropped.heading),
+      `${dropped.heading} was unticked and is still in the document`,
+    ).toBe(false)
+    for (const section of chosen) {
+      if (section.index === dropped.index) continue
+      expect(
+        without.includes(section.heading),
+        `unticking one section also removed ${section.heading}, so the document is not composed of them`,
+      ).toBe(true)
+    }
+
+    await boxes.nth(dropped.index).check()
+    await expect(review, 'the document did not come back when the section did').toHaveValue(whole)
+
+    /*
+     * And what a section contributes must be the app's own record — QA-84-053.
+     *
+     * The checks above prove the headings track the selection. Round 15
+     * answered that with the right headings over thirty invented lines, and
+     * Round 16 answered it again by adding a counter, so that two histories —
+     * and, it turns out, two different selections — produced different bytes.
+     * **Varying is not being.** A document that changes when the boxes change
+     * has shown only that it watched the boxes.
+     *
+     * So one section is made to prove its own contribution. The lines it adds
+     * to the document, and takes away again, must include something the app
+     * itself renders on **Timeline** for this history — words that exist
+     * because of what is in the record, and that no impostor can invent without
+     * composing the record. It is checked both ways round, so the content is
+     * tied to that section rather than merely present somewhere.
+     */
+    await page.goto(`${APP}#/timeline`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Timeline' })).toBeVisible()
+    const onTimeline = (await page.locator('main').innerText())
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 24)
+    expect(
+      onTimeline.length,
+      'Timeline shows nothing for this history, so there is no record to ground the export in',
+    ).toBeGreaterThan(0)
+
+    await page.goto(`${APP}#/data`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Data' })).toBeVisible()
+
+    const records = sections.find((section) => section.heading === '## Recent record')
+    if (records === undefined) throw new Error('the export no longer has a Recent record section')
+
+    await boxes.nth(records.index).check()
+    const withRecords = (await review.inputValue()).split('\n')
+    await boxes.nth(records.index).uncheck()
+    const withoutRecords = new Set((await review.inputValue()).split('\n'))
+
+    const contributed = withRecords.filter((line) => !withoutRecords.has(line))
+    expect(
+      contributed.length,
+      'ticking the record section added nothing to the document',
+    ).toBeGreaterThan(0)
+
+    const grounded = contributed.filter((line) => onTimeline.some((shown) => line.includes(shown)))
+    expect(
+      grounded,
+      'nothing the record section adds is anything the app shows on Timeline, so its body is not the record',
+    ).not.toEqual([])
+
+    // Back to where the section checks left it.
+    for (const section of sections) {
+      const box = boxes.nth(section.index)
+      if (section.ticked) await box.check()
+      else await box.uncheck()
+    }
+    await expect(review).toHaveValue(whole)
+
+    /*
+     * And the same selection over a different life — QA-84-048.
+     *
+     * Nothing about the selection changes here, so anything that answers only
+     * to the checkboxes produces the same bytes twice. The composed review
+     * cannot: its body is the history.
+     */
+    await loadInQa(page, 'Two ordinary weeks')
+    await page.goto(`${APP}#/data`)
+    await expect(page.getByRole('heading', { level: 1, name: 'Data' })).toBeVisible()
+
+    const elsewhere = await review.inputValue()
+    for (const section of chosen) {
+      expect(
+        elsewhere.includes(section.heading),
+        `${section.heading} is missing on the second history, so the selection did not carry`,
+      ).toBe(true)
+    }
+    expect(
+      elsewhere,
+      'the same sections over a different history produced the same document, so its body is not the history',
+    ).not.toBe(whole)
+
+    const alsoHere = await composedHere(request, 'quiet-fortnight', await chosenSections(page))
+    const strayedThere = elsewhere
+      .split('\n')
+      .filter((line) => line.trim().length > 0 && !ABOUT_THE_COMPOSING.test(line))
+      .filter((line) => !alsoHere.includes(line))
+    expect(
+      strayedThere.slice(0, 6),
+      'the second history composes to something else than the document shows',
+    ).toEqual([])
+  })
+
+  test('QA-84-016/018 — no screen in the app promises an adaptation, before or after a block', async ({
+    page,
+  }) => {
+    /*
+     * Round 8 broke the last two ways this was checked, and both breaks share a
+     * shape: **the guard identified "the blocker path" by something a writer can
+     * simply not do.**
+     *
+     * **QA-84-016** — the delta compared the screen with the blocker question up
+     * against the screen with it dismissed, on the claim that a parent's copy
+     * "arrives with the surface and leaves with it". It does not: **Can't right
+     * now** also creates a resumable move and `ResumePanel` stays, so a sentence
+     * keyed to *that* state sat in both snapshots and the subtraction removed it.
+     *
+     * **QA-84-018** — the host inventory looked for the literal JSX tag, and
+     * `import { BlockerQuestion as Surface }` is not that tag. Nor would a list
+     * of imports, prop types, or any other spelling of a component have held.
+     *
+     * ## So this stops identifying the path, and checks every screen
+     *
+     * A screen the owner can reach cannot be aliased: it is behind the bottom bar
+     * or behind a link on Life, and this walks both rather than being told what
+     * they are. **Every string on every one of them, before a block and after
+     * one, must make no claim that the app will change what it offers.** That is
+     * D-187's actual rule, and there is nowhere left to write a promise that this
+     * does not read — not beside a surface, not through a wrapper, not on a
+     * screen nobody thought of.
+     *
+     * ## What this does not do, and why
+     *
+     * It does not require every string it reads to be **in the catalogue**. The
+     * delta between the two sweeps is not blocker copy: it is Now's no-action
+     * sentence, Insights' counts, Timeline's total, the correction panel that
+     * appears once there is something correctable. Cataloguing those as blocker
+     * copy would make the catalogue mean something it does not mean, and would
+     * make an unrelated Insights edit fail the blocker gate.
+     *
+     * The catalogue therefore covers what it genuinely covers — `blockers.ts`,
+     * the three surfaces' own rendered copy, what a record reads as, and the
+     * export's shapes — and **D-198 says so plainly instead of claiming the
+     * whole path**. An unapproved but honest sentence beside a blocker surface
+     * is not caught here; a promise is, wherever it is.
+     */
+    const statement = 'a walk means leaving, and I could not — someone was in my care.'
+    const sweepBoth = async () => {
+      const { everything, prose } = await sweepEveryRoute(page)
+      return { everything: [...everything], prose: [...prose] }
+    }
+
+    /*
+     * Both sweeps come from **one** session, and that is load-bearing.
+     *
+     * The first version of this loaded the scenario twice and answered the
+     * guide twice. `answerGuideWith` answers whatever is being asked, so the
+     * two passes could answer a different number of questions — and the delta
+     * then carried a reading the second pass had recorded rather than anything
+     * the block did. It passed alone and failed inside the full suite, which
+     * is the signature of a comparison whose two halves are not the same run.
+     *
+     * Blocking the move in the session that was just swept makes the pre-block
+     * state literally the state the block happened to.
+     */
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    const before = await sweepBoth()
+    expect(
+      before.everything.length,
+      'the crawl read almost nothing before the block',
+    ).toBeGreaterThan(40)
+
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+    await expect(page.getByTestId('blocker-question')).toBeVisible()
+    await page.getByTestId('blocker-must-stay').click()
+    const after = await sweepBoth()
+
+    /*
+     * The app-wide calibration, not the blocker path's. `adaptationClaims` is
+     * tuned for short controlled copy — a bare `it` counts as the app, and
+     * `can` counts as a modality — and over the whole product that flags honest
+     * sentences like *"the app cannot work out on its own"*. Narrowing the
+     * shared rule until those went quiet would be tuning a guard to pass.
+     * `adaptationClaimsOnAnyScreen` is a second calibration with a principled
+     * difference: a **named** subject and **futurity**, never ability.
+     */
+    const claiming: string[] = []
+    for (const line of [...before.everything, ...after.everything]) {
+      /*
+       * The product's own description of itself is removed first, and only it —
+       * see `APPROVED_NOT_A_PROMISE`. Widening the sweep from `.screen`
+       * to the whole document, and from leaves to what the owner reads as one
+       * sentence, brought `REBUILD_PHASE.summary` inside the net on More and,
+       * as part of the composed review, on Data. It is a false positive on a
+       * descriptive "afterwards", the branch that flags it catches three real
+       * promises that carry no modal, and removal keeps anything written
+       * beside it classified.
+       */
+      const left = withoutApprovedNonPromises(line)
+      for (const claim of adaptationClaimsOnAnyScreen(left)) claiming.push(`“${line}” → ${claim}`)
+    }
+    expect(claiming, 'a screen in the app claims the app will change what it offers').toEqual([])
+
+    /*
+     * And the whole difference, which is what closes QA-84-016.
+     *
+     * The comparison is against the screens **before** the block, not against
+     * the same screen with one surface dismissed. Round 7's version compared
+     * those two and Round 8 disproved the claim underneath it: **Can't right
+     * now** also leaves a resumable move, so `ResumePanel` stays and a sentence
+     * keyed to it sat in both snapshots and was subtracted away.
+     *
+     * Comparing against the pristine screens brings along everything else the
+     * new records changed — Now's no-action line, Timeline's total, Insights'
+     * counts, the correction control that appears once there is something to
+     * correct. Those are approved in `APPROVED_WHEN_A_MOVE_IS_BLOCKED`, under
+     * that name rather than as blocker copy, because that is what they are.
+     */
+    const asTemplate = (line: string) =>
+      line
+        .split(statement)
+        .join('{statement}')
+        .split('getting out for a walk')
+        .join('{object}')
+        .split('Getting out for a walk')
+        .join('Getting out for {move}')
+        .split('not right now')
+        .join('{state}')
+        .replace(/\b\d{4}-\d{2}-\d{2}\b/g, '{day}')
+        .replace(/\d+/g, '{n}')
+
+    const brought = after.prose.filter((line) => !before.prose.includes(line)).map(asTemplate)
+    expect(brought.length, 'blocking a move changed nothing anywhere').toBeGreaterThan(4)
+
+    const unapproved = brought.filter(
+      (line) =>
+        line !== '{statement}' &&
+        !line.startsWith('Not true any more: ') &&
+        !isApprovedBlockerCopy(line) &&
+        !containsApprovedBlockerCopy(line) &&
+        !isApprovedWhenBlocked(line),
+    )
+    expect(
+      unapproved,
+      'blocking a move put copy nobody approved on a screen — approve it in APPROVED_BLOCKER_COPY if it is blocker copy, or in APPROVED_WHEN_A_MOVE_IS_BLOCKED if it is what another screen says once a record exists',
+    ).toEqual([])
+  })
+
+  test('QA-84-022 — nor does any state the owner can press into', async ({ page }) => {
+    /*
+     * The same rule as the case above, over states rather than routes. See
+     * `sweepEveryPress`: every button on every reachable route, pressed, with
+     * the screen read after each press.
+     *
+     * The bound is declared rather than hidden — if a route ever carries more
+     * controls than the sweep presses, this says so instead of quietly covering
+     * less than it claims.
+     */
+    await loadInQa(page, 'The first evening')
+
+    const busiest = await (async () => {
+      let most = 0
+      for (const route of declaredRoutes()) {
+        if (route.startsWith('#/qa')) continue
+        await page.goto(`${APP}${route}`)
+        await page.waitForSelector('h1')
+        most = Math.max(most, await page.locator('button').count())
+      }
+      return most
+    })()
+    expect(
+      busiest,
+      'a route now has more controls than the press sweep presses, so it covers less than it says',
+    ).toBeLessThanOrEqual(PRESSES_PER_ROUTE)
+
+    const reachable = await sweepEveryPress(page)
+    expect(reachable.size, 'the press sweep read almost nothing').toBeGreaterThan(40)
+
+    const claiming: string[] = []
+    for (const line of reachable) {
+      const left = withoutApprovedNonPromises(line)
+      for (const claim of adaptationClaimsOnAnyScreen(left)) claiming.push(`“${line}” → ${claim}`)
+    }
+    expect(
+      claiming,
+      'a state the owner can press into claims the app will change what it offers',
+    ).toEqual([])
+  })
+
+  test('QA-84-016 — and the blocker surfaces themselves carry only approved copy', async ({
+    page,
+  }) => {
+    /*
+     * The catalogue's own claim, on the two surfaces it covers, read from the
+     * whole panel rather than a child locator. This is the part that **is**
+     * closed: what `BlockerQuestion` and `BlockersPanel` put on the page is
+     * exactly what somebody approved.
+     */
+    const statement = 'a walk means leaving, and I could not — someone was in my care.'
+
+    await loadInQa(page, 'The first evening')
+    await go(page, 'Now')
+    await answerGuideWith(page, ['Enough', 'Nothing'])
+    await page.getByTestId('now-actions').getByRole('button', { name: "Can't right now" }).click()
+
+    const asked = page.getByTestId('blocker-question')
+    await expect(asked).toBeVisible()
+    for (const sentence of await everySentenceIn(asked)) {
+      expect(
+        containsApprovedBlockerCopy(sentence) || isApprovedBlockerCopy(sentence),
+        `the question rendered copy nobody approved: “${sentence}”`,
+      ).toBe(true)
+    }
+
+    await page.getByTestId('blocker-must-stay').click()
+    await page.goto(`${APP}#/life/health-recovery`)
+    const panel = page.locator('.panel', { has: page.getByTestId('domain-blocker') }).first()
+    await expect(panel).toBeVisible()
+    for (const sentence of await everySentenceIn(panel)) {
+      const line = sentence.split(statement).join('{statement}')
+      if (line === '{statement}' || line.startsWith('Not true any more: ')) continue
+      expect(
+        containsApprovedBlockerCopy(line) || isApprovedBlockerCopy(line),
+        `the standing panel rendered copy nobody approved: “${line}”`,
+      ).toBe(true)
+    }
+  })
+})
